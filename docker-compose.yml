@@ -1,0 +1,49 @@
+---
+version: "3"
+services:
+
+  torproxy:
+    image: dperson/torproxy:amd64
+    container_name: torproxy
+    restart: unless-stopped
+    volumes:
+      - <REDACTED>:/etc/tor
+      - <REDACTED>:/var/lib/tor
+    networks:
+      onionized:
+        ipv4_address: 172.18.0.4
+      internet:
+        ipv4_address: 172.19.0.4
+
+  lightning:
+    image: lightyear15/lightningd:v0.12.0
+    container_name: lightning
+    volumes:
+      - <REDACTED>:/root/.lightning
+      - <REDACTED>:/root/backup
+    restart: unless-stopped
+    depends_on:
+      - torproxy
+    networks:
+      onionized:
+        ipv4_address: 172.18.0.5
+      internet:
+        ipv4_address: 172.19.0.5
+
+
+networks:
+  onionized:
+    driver: bridge
+    internal: true
+    ipam:
+      driver: default
+      config:
+        - subnet: "172.18.0.0/24"
+
+  internet:
+    driver: bridge
+    internal: false
+    ipam:
+      driver: default
+      config:
+        - subnet: "172.19.0.0/24"

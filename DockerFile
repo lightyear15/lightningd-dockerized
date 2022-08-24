@@ -1,0 +1,77 @@
+FROM debian:bullseye-slim as downloader
+RUN set -ex \
+	&& apt-get update \
+	&& apt-get install -qq --no-install-recommends ca-certificates dirmngr wget
+WORKDIR /opt
+RUN wget -qO /opt/tini "https://github.com/krallin/tini/releases/download/v0.18.0/tini" \
+    && echo "12d20136605531b09a2c2dac02ccee85e1b874eb322ef6baf7561cd93f93c855 /opt/tini" | sha256sum -c - \
+    && chmod +x /opt/tini
+
+
+
+FROM gcc:bullseye as gccbuilder
+RUN apt-get update
+RUN apt-get install apt-utils
+RUN apt-get install -y zlib1g-dev libsqlite3-dev libgmp-dev libpq-dev libtool libffi-dev
+RUN apt-get install -y mtools wget gettext autoconf automake build-essential
+RUN apt-get install -y ca-certificates dirmngr gnupg
+RUN apt-get install -y python3 python3-dev python3-pip python3-venv
+RUN pip3 install poetry wheel mrkd mako setuptools mistune==0.8.4
+WORKDIR /tmp
+RUN git clone --branch=v0.12.0 https://github.com/ElementsProject/lightning
+WORKDIR /tmp/lightning
+ENV PYTHON_VERSION=3
+ARG DEVELOPER 0
+RUN ./configure --prefix=/tmp/lightning_install --enable-static && make -j3 DEVELOPER=${DEVELOPER} && make install
+
+
+
+FROM rust:bullseye as rustbuilder
+RUN rustup component add rustfmt
+WORKDIR /root
+RUN git clone --branch=v0.1.1 https://github.com/talaia-labs/rust-teos.git
+WORKDIR /root/rust-teos
+RUN cargo install --path watchtower-plugin
+
+
+
+FROM golang:bullseye as golangbuilder
+RUN env
+WORKDIR /usr/src
+RUN git clone --branch=v0.5.2 https://github.com/fiatjaf/trustedcoin.git
+WORKDIR /usr/src/trustedcoin
+RUN make trustedcoin
+
+
+
+FROM debian:bullseye-slim as final
+
+COPY --from=downloader /opt/tini /usr/bin/tini
+RUN apt-get update && apt-get install -y --no-install-recommends socat inotify-tools python3 python3-pip libpq5\
+    && rm -rf /var/lib/apt/lists/*
+
+ENV LIGHTNINGD_DATA=/root/.lightning
+ENV LIGHTNINGD_RPC_PORT=9835
+ENV LIGHTNINGD_PORT=9735
+ENV LIGHTNINGD_NETWORK=bitcoin
+
+RUN mkdir $LIGHTNINGD_DATA && \
+    touch $LIGHTNINGD_DATA/config
+VOLUME [ "/root/.lightning" ]
+COPY --from=gccbuilder /tmp/lightning_install/ /usr/local/
+COPY tools/docker-entrypoint.sh entrypoint.sh
+
+RUN pip3 install --upgrade setuptools pip
+RUN pip3 install pyln-client # common to many plugins
+RUN pip3 install packaging requests # summary plugin
+RUN pip3 install networkx dnspython numpy pickle # autopilot plugin
+
+COPY --from=rustbuilder /root/rust-teos/target/release/watchtower-client /usr/local/libexec/c-lightning/plugins/
+COPY --from=golangbuilder /usr/src/trustedcoin/trustedcoin /usr/local/libexec/c-lightning/plugins/
+RUN chmod +x /usr/local/libexec/c-lightning/plugins/watchtower-client
+RUN chmod +x /usr/local/libexec/c-lightning/plugins/trustedcoin
+
+
+EXPOSE 9735 9835
+ENTRYPOINT  [ "/usr/bin/tini", "-g", "--", "./entrypoint.sh" ]
+
